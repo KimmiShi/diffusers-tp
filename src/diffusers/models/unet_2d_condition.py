@@ -893,13 +893,19 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             image_embeds = added_cond_kwargs.get("image_embeds")
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
         # 2. pre-process
-        sample = self.conv_in(sample)
+        print("before conv_in", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+        sample = self.conv_in(sample)
+        print("after conv_in", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
         # 3. down
 
         is_controlnet = mid_block_additional_residual is not None and down_block_additional_residuals is not None
         is_adapter = mid_block_additional_residual is None and down_block_additional_residuals is not None
 
+        def get_size(t):
+            ts = 4 if t.dtype==torch.float else 2
+            return t.numel() * ts
+        # import pdb;pdb.set_trace()
         down_block_res_samples = (sample,)
         for downsample_block in self.down_blocks:
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
@@ -924,7 +930,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     sample += down_block_additional_residuals.pop(0)
 
             down_block_res_samples += res_samples
-
+            # print("after block:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+            # print("down_block_res_samples total mem",sum([get_size(t) for t in down_block_res_samples])/1e6)
+            # import pdb;pdb.set_trace()
         if is_controlnet:
             new_down_block_res_samples = ()
 
@@ -936,6 +944,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
             down_block_res_samples = new_down_block_res_samples
 
+        # import pdb;pdb.set_trace()
+        # print(torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
         # 4. mid
         if self.mid_block is not None:
             sample = self.mid_block(
@@ -946,7 +956,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 cross_attention_kwargs=cross_attention_kwargs,
                 encoder_attention_mask=encoder_attention_mask,
             )
-
+            # import pdb;pdb.set_trace()
+            # print("after mid block",torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
         if is_controlnet:
             sample = sample + mid_block_additional_residual
 

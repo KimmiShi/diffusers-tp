@@ -1041,7 +1041,10 @@ class CrossAttnDownBlock2D(nn.Module):
                     return_dict=False,
                 )[0]
             else:
+                print("before resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
                 hidden_states = resnet(hidden_states, temb)
+                print("after resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1050,6 +1053,8 @@ class CrossAttnDownBlock2D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
+                print("after attn:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+
 
             # apply additional residuals to the output of the last pair of resnet and attention blocks
             if i == len(blocks) - 1 and additional_residuals is not None:
@@ -1120,6 +1125,7 @@ class DownBlock2D(nn.Module):
 
     def forward(self, hidden_states, temb=None):
         output_states = ()
+        print("before down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
         for resnet in self.resnets:
             if self.training and self.gradient_checkpointing:
@@ -1148,6 +1154,7 @@ class DownBlock2D(nn.Module):
                 hidden_states = downsampler(hidden_states)
 
             output_states = output_states + (hidden_states,)
+        print("after down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
         return hidden_states, output_states
 

@@ -21,6 +21,7 @@ from ..utils import deprecate, logging, maybe_allow_in_graph
 from ..utils.import_utils import is_xformers_available
 from .lora import LoRALinearLayer
 
+from .tp_utils import ColParallelLinear,RowParallelLinear
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -135,12 +136,12 @@ class Attention(nn.Module):
                 f"unknown cross_attention_norm: {cross_attention_norm}. Should be None, 'layer_norm' or 'group_norm'"
             )
 
-        self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
-
+        # self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
+        self.to_q = ColParallelLinear(query_dim, inner_dim, bias=bias)
         if not self.only_cross_attention:
             # only relevant for the `AddedKVProcessor` classes
-            self.to_k = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
-            self.to_v = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
+            self.to_k = ColParallelLinear(cross_attention_dim, inner_dim, bias=bias)
+            self.to_v = ColParallelLinear(cross_attention_dim, inner_dim, bias=bias)
         else:
             self.to_k = None
             self.to_v = None
@@ -150,7 +151,7 @@ class Attention(nn.Module):
             self.add_v_proj = nn.Linear(added_kv_proj_dim, inner_dim)
 
         self.to_out = nn.ModuleList([])
-        self.to_out.append(nn.Linear(inner_dim, query_dim, bias=out_bias))
+        self.to_out.append(RowParallelLinear(inner_dim, query_dim, bias=out_bias, sequence_parallel=True))
         self.to_out.append(nn.Dropout(dropout))
 
         # set attention processor
