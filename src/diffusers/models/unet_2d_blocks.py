@@ -1074,10 +1074,12 @@ class CrossAttnDownBlock2D(nn.Module):
 
             output_states = output_states + (hidden_states,)
 
+        # import pdb;pdb.set_trace()
         if self.downsamplers is not None:
             for downsampler in self.downsamplers:
                 hidden_states = downsampler(hidden_states)
 
+            set_sequence_parallel_attr(hidden_states)
             output_states = output_states + (hidden_states,)
 
         set_sequence_parallel_attr(hidden_states)
@@ -1140,6 +1142,9 @@ class DownBlock2D(nn.Module):
         output_states = ()
         # print("before down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+        hidden_states = maybe_split_into_sequnce_parallel(hidden_states)
+        if temb is not None:
+            temb = maybe_split_into_sequnce_parallel(temb)
         for resnet in self.resnets:
             if self.training and self.gradient_checkpointing:
 
@@ -1159,16 +1164,19 @@ class DownBlock2D(nn.Module):
                     )
             else:
                 hidden_states = resnet(hidden_states, temb)
-
+                set_sequence_parallel_attr(hidden_states)
+                # import pdb;pdb.set_trace()
             output_states = output_states + (hidden_states,)
 
         if self.downsamplers is not None:
             for downsampler in self.downsamplers:
                 hidden_states = downsampler(hidden_states)
 
+            set_sequence_parallel_attr(hidden_states)
             output_states = output_states + (hidden_states,)
         # print("after down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+        set_sequence_parallel_attr(hidden_states)
         return hidden_states, output_states
 
 
@@ -2266,10 +2274,14 @@ class UpBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(self, hidden_states, res_hidden_states_tuple, temb=None, upsample_size=None):
-        hidden_states = maybe_gather_from_sequence_parallel(hidden_states)
+        # hidden_states = maybe_gather_from_sequence_parallel(hidden_states)
+        hidden_states = maybe_split_into_sequnce_parallel(hidden_states)
+        if temb is not None:
+            temb = maybe_split_into_sequnce_parallel(temb)
         for resnet in self.resnets:
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
+            res_hidden_states = maybe_split_into_sequnce_parallel(res_hidden_states)
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
             hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
@@ -2291,11 +2303,13 @@ class UpBlock2D(nn.Module):
                     )
             else:
                 hidden_states = resnet(hidden_states, temb)
+                set_sequence_parallel_attr(hidden_states)
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
                 hidden_states = upsampler(hidden_states, upsample_size)
 
+        hidden_states = maybe_gather_from_sequence_parallel(hidden_states)
         return hidden_states
 
 
