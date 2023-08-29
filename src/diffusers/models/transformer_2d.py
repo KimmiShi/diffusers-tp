@@ -26,6 +26,7 @@ from .embeddings import PatchEmbed
 from .lora import LoRACompatibleConv, LoRACompatibleLinear
 from .modeling_utils import ModelMixin
 
+from .tp_utils import _split_along_first_dim, gather_from_sequence_parallel_region
 
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
@@ -270,7 +271,10 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             encoder_attention_mask = (1 - encoder_attention_mask.to(hidden_states.dtype)) * -10000.0
             encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
 
-        print("before input", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+        # hidden_states = _split_along_first_dim(hidden_states)
+        # import pdb;pdb.set_trace()
+
+        # print("before input", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
         # 1. Input
         if self.is_input_continuous:
             batch, _, height, width = hidden_states.shape
@@ -292,6 +296,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
         # print("after input", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+        setattr(hidden_states, "sequence_parallel", True)
+        # input to blocks are sequence parallel
         # 2. Blocks
         for block in self.transformer_blocks:
             if self.training and self.gradient_checkpointing:
@@ -354,6 +360,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             output = hidden_states.reshape(
                 shape=(-1, self.out_channels, height * self.patch_size, width * self.patch_size)
             )
+        # output = gather_from_sequence_parallel_region(output)
+
         # print("after output", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
         if not return_dict:
             return (output,)

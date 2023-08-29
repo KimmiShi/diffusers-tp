@@ -25,7 +25,8 @@ from .attention_processor import Attention, AttnAddedKVProcessor, AttnAddedKVPro
 from .dual_transformer_2d import DualTransformer2DModel
 from .resnet import Downsample2D, FirDownsample2D, FirUpsample2D, KDownsample2D, KUpsample2D, ResnetBlock2D, Upsample2D
 from .transformer_2d import Transformer2DModel
-
+from .tp_utils import gather_from_sequence_parallel_region, _split_along_first_dim,maybe_gather_from_sequence_parallel, \
+    maybe_split_into_sequnce_parallel, set_sequence_parallel_attr
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -634,6 +635,8 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
+        hidden_states = maybe_split_into_sequnce_parallel(hidden_states)
+        temb = maybe_split_into_sequnce_parallel(temb)
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             if self.training and self.gradient_checkpointing:
@@ -671,8 +674,11 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
+
                 hidden_states = resnet(hidden_states, temb)
 
+        hidden_states = set_sequence_parallel_attr(hidden_states)
+        # hidden_states = gather_from_sequence_parallel_region(hidden_states)
         return hidden_states
 
 
@@ -783,6 +789,7 @@ class UNetMidBlock2DSimpleCrossAttn(nn.Module):
             #         mask = attention_mask if encoder_hidden_states is None else encoder_attention_mask
             mask = attention_mask
 
+        hidden_states = _split_along_first_dim(hidden_states)
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             # attn
@@ -796,6 +803,7 @@ class UNetMidBlock2DSimpleCrossAttn(nn.Module):
             # resnet
             hidden_states = resnet(hidden_states, temb)
 
+        hidden_states = gather_from_sequence_parallel_region(hidden_states)
         return hidden_states
 
 
@@ -1013,6 +1021,8 @@ class CrossAttnDownBlock2D(nn.Module):
 
         blocks = list(zip(self.resnets, self.attentions))
 
+        hidden_states = maybe_split_into_sequnce_parallel(hidden_states)
+        temb = maybe_split_into_sequnce_parallel(temb)
         for i, (resnet, attn) in enumerate(blocks):
             if self.training and self.gradient_checkpointing:
 
@@ -1041,9 +1051,9 @@ class CrossAttnDownBlock2D(nn.Module):
                     return_dict=False,
                 )[0]
             else:
-                print("before resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+                # print("before resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
                 hidden_states = resnet(hidden_states, temb)
-                print("after resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+                # print("after resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
                 hidden_states = attn(
                     hidden_states,
@@ -1053,9 +1063,11 @@ class CrossAttnDownBlock2D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                print("after attn:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+                set_sequence_parallel_attr(hidden_states)
+                # print("after attn:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+            # full_hidden_states = gather_from_sequence_parallel_region(hidden_states)
             # apply additional residuals to the output of the last pair of resnet and attention blocks
             if i == len(blocks) - 1 and additional_residuals is not None:
                 hidden_states = hidden_states + additional_residuals
@@ -1068,6 +1080,7 @@ class CrossAttnDownBlock2D(nn.Module):
 
             output_states = output_states + (hidden_states,)
 
+        set_sequence_parallel_attr(hidden_states)
         return hidden_states, output_states
 
 
@@ -1125,7 +1138,7 @@ class DownBlock2D(nn.Module):
 
     def forward(self, hidden_states, temb=None):
         output_states = ()
-        print("before down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+        # print("before down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
         for resnet in self.resnets:
             if self.training and self.gradient_checkpointing:
@@ -1154,7 +1167,7 @@ class DownBlock2D(nn.Module):
                 hidden_states = downsampler(hidden_states)
 
             output_states = output_states + (hidden_states,)
-        print("after down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+        # print("after down2d resnet:", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
         return hidden_states, output_states
 
@@ -2147,10 +2160,15 @@ class CrossAttnUpBlock2D(nn.Module):
         attention_mask: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
     ):
+        hidden_states = maybe_split_into_sequnce_parallel(hidden_states)
+        temb = maybe_split_into_sequnce_parallel(temb)
+
         for resnet, attn in zip(self.resnets, self.attentions):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+            # import pdb;pdb.set_trace()
+            res_hidden_states = maybe_split_into_sequnce_parallel(res_hidden_states)
             hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             if self.training and self.gradient_checkpointing:
@@ -2194,6 +2212,8 @@ class CrossAttnUpBlock2D(nn.Module):
             for upsampler in self.upsamplers:
                 hidden_states = upsampler(hidden_states, upsample_size)
 
+        # hidden_states = gather_from_sequence_parallel_region(hidden_states)
+        hidden_states = set_sequence_parallel_attr(hidden_states)
         return hidden_states
 
 
@@ -2246,6 +2266,7 @@ class UpBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(self, hidden_states, res_hidden_states_tuple, temb=None, upsample_size=None):
+        hidden_states = maybe_gather_from_sequence_parallel(hidden_states)
         for resnet in self.resnets:
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]

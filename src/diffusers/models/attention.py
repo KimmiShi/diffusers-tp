@@ -62,9 +62,11 @@ class BasicTransformerBlock(nn.Module):
         norm_elementwise_affine: bool = True,
         norm_type: str = "layer_norm",
         final_dropout: bool = False,
+        sequence_parallel = True,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
+        self.sequence_parallel = sequence_parallel
 
         self.use_ada_layer_norm_zero = (num_embeds_ada_norm is not None) and norm_type == "ada_norm_zero"
         self.use_ada_layer_norm = (num_embeds_ada_norm is not None) and norm_type == "ada_norm"
@@ -141,7 +143,9 @@ class BasicTransformerBlock(nn.Module):
     ):
         # import pdb;pdb.set_trace()
         # split
-        hidden_states = _split_along_first_dim(hidden_states)
+        # hidden_states = _split_along_first_dim(hidden_states)
+        # if not hasattr(hidden_states, 'sequence_parallel'):
+        #     hidden_states = _split_along_first_dim(hidden_states)
 
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 1. Self-Attention
@@ -179,6 +183,7 @@ class BasicTransformerBlock(nn.Module):
                 attention_mask=encoder_attention_mask,
                 **cross_attention_kwargs,
             )
+            # import pdb;pdb.set_trace()
             hidden_states = attn_output + hidden_states
 
         # 3. Feed-forward
@@ -207,7 +212,8 @@ class BasicTransformerBlock(nn.Module):
             ff_output = gate_mlp.unsqueeze(1) * ff_output
 
         hidden_states = ff_output + hidden_states
-        hidden_states = gather_from_sequence_parallel_region(hidden_states)
+        # hidden_states = gather_from_sequence_parallel_region(hidden_states)
+        setattr(hidden_states, "sequence_parallel", True)
 
         return hidden_states
 

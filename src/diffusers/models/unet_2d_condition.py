@@ -41,7 +41,7 @@ from .unet_2d_blocks import (
     get_down_block,
     get_up_block,
 )
-
+from .tp_utils import _split_along_first_dim, gather_from_sequence_parallel_region
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -893,10 +893,11 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             image_embeds = added_cond_kwargs.get("image_embeds")
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
         # 2. pre-process
-        print("before conv_in", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+        # print("before conv_in", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
 
+        # sample = _split_along_first_dim(sample)
         sample = self.conv_in(sample)
-        print("after conv_in", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
+        # print("after conv_in", torch.cuda.memory_allocated()/1e9, torch.cuda.max_memory_allocated()/1e9)
         # 3. down
 
         is_controlnet = mid_block_additional_residual is not None and down_block_additional_residuals is not None

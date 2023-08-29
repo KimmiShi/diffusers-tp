@@ -30,6 +30,20 @@ class mylinear(nn.Module):
             out +=self.bias
         return out
 
+def maybe_gather_from_sequence_parallel(inp):
+    if hasattr(inp, "sequence_parallel") and inp.sequence_parallel:
+        return gather_from_sequence_parallel_region(inp)
+    return inp
+
+def maybe_split_into_sequnce_parallel(inp):
+    if not hasattr(inp, "sequence_parallel"):
+        return _split_along_first_dim(inp)
+    return inp
+
+def set_sequence_parallel_attr(inp, value=True):
+    setattr(inp, "sequence_parallel", value)
+    return inp
+
 class _ReduceFromModelParallelRegion(torch.autograd.Function):
     """All-reduce the input from the model parallel region."""
 
@@ -98,6 +112,7 @@ def _split_along_first_dim(input_):
 
     output = input_[dim_offset:dim_offset+local_dim_size].contiguous()
 
+    setattr(output, "sequence_parallel", True)
     return output
 
 class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
@@ -142,7 +157,10 @@ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
             return _split_along_first_dim(grad_output), None
 
 def gather_from_sequence_parallel_region(input_, tensor_parallel_output_grad=True):
-    return _GatherFromSequenceParallelRegion.apply(input_, tensor_parallel_output_grad)
+    output = _GatherFromSequenceParallelRegion.apply(input_, tensor_parallel_output_grad)
+    setattr(output, "sequence_parallel", False)
+    return output
+
 def reduce_scatter_to_sequence_parallel_region(input_):
     return _ReduceScatterToSequenceParallelRegion.apply(input_)
 
