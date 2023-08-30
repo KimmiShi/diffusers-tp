@@ -16,9 +16,9 @@ def set_tp_group(group):
 def get_tensor_model_parallel_world_size():
     return dist.get_world_size(get_tp_group())
 
-class mylinear(nn.Module):
+class TpLinear(nn.Module):
     def __init__(self, fin, fout, bias=True):
-        super(mylinear, self).__init__()
+        super(TpLinear, self).__init__()
         self.weight = Parameter(torch.rand((fin, fout)))
         self.bias =None
         if bias:
@@ -172,7 +172,7 @@ class ColParallelLinear(nn.Module):
         assert fout%self.tp_world_size==0
         self.fout = int(fout/self.tp_world_size)
 
-        self.linear = mylinear(fin, self.fout, bias)
+        self.linear = TpLinear(fin, self.fout, bias)
 
 
     def forward(self, x):
@@ -216,7 +216,7 @@ class RowParallelLinear(nn.Module):
         self.tp_world_size = torch.distributed.get_world_size(tp_group)
         assert fin%self.tp_world_size==0
         self.fin = int(fin/self.tp_world_size)
-        self.linear = mylinear(self.fin, fout, bias)
+        self.linear = TpLinear(self.fin, fout, bias)
         self.sequence_parallel = sequence_parallel
 
 
