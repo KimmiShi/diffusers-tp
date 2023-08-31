@@ -21,7 +21,7 @@ from ..utils import deprecate, logging, maybe_allow_in_graph
 from ..utils.import_utils import is_xformers_available
 from .lora import LoRALinearLayer
 
-from .tp_utils import ColParallelLinear,RowParallelLinear
+from .tp_utils import ColParallelLinear,RowParallelLinear, gather_from_sequence_parallel_region
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -72,6 +72,7 @@ class Attention(nn.Module):
         residual_connection: bool = False,
         _from_deprecated_attn_block=False,
         processor: Optional["AttnProcessor"] = None,
+        sequence_parallel = False,
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -97,6 +98,7 @@ class Attention(nn.Module):
 
         self.added_kv_proj_dim = added_kv_proj_dim
         self.only_cross_attention = only_cross_attention
+        self.sequence_parallel = sequence_parallel
 
         if self.added_kv_proj_dim is None and self.only_cross_attention:
             raise ValueError(
@@ -151,7 +153,7 @@ class Attention(nn.Module):
             self.add_v_proj = nn.Linear(added_kv_proj_dim, inner_dim)
 
         self.to_out = nn.ModuleList([])
-        self.to_out.append(RowParallelLinear(inner_dim, query_dim, bias=out_bias, sequence_parallel=True))
+        self.to_out.append(RowParallelLinear(inner_dim, query_dim, bias=out_bias, sequence_parallel=sequence_parallel))
         self.to_out.append(nn.Dropout(dropout))
 
         # set attention processor
@@ -317,6 +319,10 @@ class Attention(nn.Module):
         self.processor = processor
 
     def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None, **cross_attention_kwargs):
+        if self.sequence_parallel:
+            hidden_states = gather_from_sequence_parallel_region(hidden_states)
+            if encoder_hidden_states is not None:
+                encoder_hidden_states = gather_from_sequence_parallel_region(encoder_hidden_states)
         # The `Attention` class can call different attention processors / attention functions
         # here we simply pass along all tensors to the selected processor class
         # For standard processors that are defined here, `**cross_attention_kwargs` is empty

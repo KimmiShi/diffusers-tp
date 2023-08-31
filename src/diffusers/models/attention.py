@@ -62,7 +62,7 @@ class BasicTransformerBlock(nn.Module):
         norm_elementwise_affine: bool = True,
         norm_type: str = "layer_norm",
         final_dropout: bool = False,
-        sequence_parallel = True,
+        sequence_parallel = False,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -93,6 +93,7 @@ class BasicTransformerBlock(nn.Module):
             bias=attention_bias,
             cross_attention_dim=cross_attention_dim if only_cross_attention else None,
             upcast_attention=upcast_attention,
+            sequence_parallel = sequence_parallel
         )
 
         # 2. Cross-Attn
@@ -113,6 +114,7 @@ class BasicTransformerBlock(nn.Module):
                 dropout=dropout,
                 bias=attention_bias,
                 upcast_attention=upcast_attention,
+                sequence_parallel = sequence_parallel
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.norm2 = None
@@ -120,7 +122,8 @@ class BasicTransformerBlock(nn.Module):
 
         # 3. Feed-forward
         self.norm3 = nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine)
-        self.ff = FeedForward(dim, dropout=dropout, activation_fn=activation_fn, final_dropout=final_dropout)
+        self.ff = FeedForward(dim, dropout=dropout, activation_fn=activation_fn, final_dropout=final_dropout,
+                              sequence_parallel = sequence_parallel)
 
         # let chunk size default to None
         self._chunk_size = None
@@ -140,13 +143,8 @@ class BasicTransformerBlock(nn.Module):
         timestep: Optional[torch.LongTensor] = None,
         cross_attention_kwargs: Dict[str, Any] = None,
         class_labels: Optional[torch.LongTensor] = None,
+        sequence_parallel=False
     ):
-        # import pdb;pdb.set_trace()
-        # split
-        # hidden_states = _split_along_first_dim(hidden_states)
-        # if not hasattr(hidden_states, 'sequence_parallel'):
-        #     hidden_states = _split_along_first_dim(hidden_states)
-
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 1. Self-Attention
         if self.use_ada_layer_norm:
@@ -160,7 +158,6 @@ class BasicTransformerBlock(nn.Module):
 
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
 
-        norm_hidden_states = gather_from_sequence_parallel_region(norm_hidden_states)
         attn_output = self.attn1(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,
@@ -169,6 +166,7 @@ class BasicTransformerBlock(nn.Module):
         )
         if self.use_ada_layer_norm_zero:
             attn_output = gate_msa.unsqueeze(1) * attn_output
+
         hidden_states = attn_output + hidden_states
 
         # 2. Cross-Attention
@@ -176,14 +174,12 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep) if self.use_ada_layer_norm else self.norm2(hidden_states)
             )
-            norm_hidden_states = gather_from_sequence_parallel_region(norm_hidden_states)
             attn_output = self.attn2(
                 norm_hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 **cross_attention_kwargs,
             )
-            # import pdb;pdb.set_trace()
             hidden_states = attn_output + hidden_states
 
         # 3. Feed-forward
@@ -205,14 +201,12 @@ class BasicTransformerBlock(nn.Module):
                 dim=self._chunk_dim,
             )
         else:
-            norm_hidden_states = gather_from_sequence_parallel_region(norm_hidden_states)
             ff_output = self.ff(norm_hidden_states)
 
         if self.use_ada_layer_norm_zero:
             ff_output = gate_mlp.unsqueeze(1) * ff_output
 
         hidden_states = ff_output + hidden_states
-        # hidden_states = gather_from_sequence_parallel_region(hidden_states)
         setattr(hidden_states, "sequence_parallel", True)
 
         return hidden_states
@@ -239,10 +233,12 @@ class FeedForward(nn.Module):
         dropout: float = 0.0,
         activation_fn: str = "geglu",
         final_dropout: bool = False,
+        sequence_parallel = False,
     ):
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = dim_out if dim_out is not None else dim
+        self.sequence_parallel = sequence_parallel
 
         assert activation_fn == "geglu"
         act_fn = GEGLU_ColParallel(dim, inner_dim)
@@ -254,7 +250,7 @@ class FeedForward(nn.Module):
         # project dropout
         self.net.append(nn.Dropout(dropout))
         # project out
-        proj2 = RowParallelLinear(inner_dim, dim_out, sequence_parallel=True)
+        proj2 = RowParallelLinear(inner_dim, dim_out, sequence_parallel = sequence_parallel)
         # LoRACompatibleLinear(inner_dim, dim_out)
         self.net.append(proj2)
         # FF as used in Vision Transformer, MLP-Mixer, etc. have a final dropout
@@ -262,62 +258,12 @@ class FeedForward(nn.Module):
             self.net.append(nn.Dropout(dropout))
 
     def forward(self, hidden_states):
-        # import pdb;pdb.set_trace()
+        if self.sequence_parallel:
+            hidden_states = gather_from_sequence_parallel_region(hidden_states)
         for module in self.net:
             hidden_states = module(hidden_states)
         return hidden_states
 
-
-class FeedForwardBKUP(nn.Module):
-    r"""
-    A feed-forward layer.
-
-    Parameters:
-        dim (`int`): The number of channels in the input.
-        dim_out (`int`, *optional*): The number of channels in the output. If not given, defaults to `dim`.
-        mult (`int`, *optional*, defaults to 4): The multiplier to use for the hidden dimension.
-        dropout (`float`, *optional*, defaults to 0.0): The dropout probability to use.
-        activation_fn (`str`, *optional*, defaults to `"geglu"`): Activation function to be used in feed-forward.
-        final_dropout (`bool` *optional*, defaults to False): Apply a final dropout.
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        dim_out: Optional[int] = None,
-        mult: int = 4,
-        dropout: float = 0.0,
-        activation_fn: str = "geglu",
-        final_dropout: bool = False,
-    ):
-        super().__init__()
-        inner_dim = int(dim * mult)
-        dim_out = dim_out if dim_out is not None else dim
-
-        if activation_fn == "gelu":
-            act_fn = GELU(dim, inner_dim)
-        if activation_fn == "gelu-approximate":
-            act_fn = GELU(dim, inner_dim, approximate="tanh")
-        elif activation_fn == "geglu":
-            act_fn = GEGLU(dim, inner_dim)
-        elif activation_fn == "geglu-approximate":
-            act_fn = ApproximateGELU(dim, inner_dim)
-
-        self.net = nn.ModuleList([])
-        # project in
-        self.net.append(act_fn)
-        # project dropout
-        self.net.append(nn.Dropout(dropout))
-        # project out
-        self.net.append(LoRACompatibleLinear(inner_dim, dim_out))
-        # FF as used in Vision Transformer, MLP-Mixer, etc. have a final dropout
-        if final_dropout:
-            self.net.append(nn.Dropout(dropout))
-
-    def forward(self, hidden_states):
-        for module in self.net:
-            hidden_states = module(hidden_states)
-        return hidden_states
 
 class GELU(nn.Module):
     r"""

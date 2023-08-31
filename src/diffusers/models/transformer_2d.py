@@ -26,8 +26,6 @@ from .embeddings import PatchEmbed
 from .lora import LoRACompatibleConv, LoRACompatibleLinear
 from .modeling_utils import ModelMixin
 
-from .tp_utils import _split_along_first_dim, gather_from_sequence_parallel_region
-
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
     """
@@ -92,6 +90,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         upcast_attention: bool = False,
         norm_type: str = "layer_norm",
         norm_elementwise_affine: bool = True,
+        sequence_parallel=False,
     ):
         super().__init__()
         self.use_linear_projection = use_linear_projection
@@ -184,6 +183,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     upcast_attention=upcast_attention,
                     norm_type=norm_type,
                     norm_elementwise_affine=norm_elementwise_affine,
+                    sequence_parallel=sequence_parallel
                 )
                 for d in range(num_layers)
             ]
@@ -290,8 +290,6 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         elif self.is_input_patches:
             hidden_states = self.pos_embed(hidden_states)
 
-        setattr(hidden_states, "sequence_parallel", True)
-        # input to blocks are sequence parallel
         # 2. Blocks
         for block in self.transformer_blocks:
             if self.training and self.gradient_checkpointing:

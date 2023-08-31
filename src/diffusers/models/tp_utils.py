@@ -16,20 +16,6 @@ def set_tp_group(group):
 def get_tensor_model_parallel_world_size():
     return dist.get_world_size(get_tp_group())
 
-class TpLinear(nn.Module):
-    def __init__(self, fin, fout, bias=True):
-        super(TpLinear, self).__init__()
-        self.weight = Parameter(torch.rand((fin, fout)))
-        self.bias =None
-        if bias:
-            self.bias = Parameter(torch.zeros(fout))
-
-    def forward(self, x):
-        out = torch.matmul(x, self.weight)
-        if self.bias is not None:
-            out +=self.bias
-        return out
-
 def maybe_gather_from_sequence_parallel(inp):
     if hasattr(inp, "sequence_parallel") and inp.sequence_parallel:
         return gather_from_sequence_parallel_region(inp)
@@ -44,6 +30,11 @@ def set_sequence_parallel_attr(inp, value=True):
     setattr(inp, "sequence_parallel", value)
     return inp
 
+def is_squence_parallel_tensor(inp):
+    return hasattr(inp, "sequence_parallel") and inp.sequence_parallel==True
+
+
+# the following Reduce and Gather functions are adopted from https://github.com/NVIDIA/Megatron-LM
 class _ReduceFromModelParallelRegion(torch.autograd.Function):
     """All-reduce the input from the model parallel region."""
 
@@ -112,7 +103,7 @@ def _split_along_first_dim(input_):
 
     output = input_[dim_offset:dim_offset+local_dim_size].contiguous()
 
-    setattr(output, "sequence_parallel", True)
+    set_sequence_parallel_attr(output, True)
     return output
 
 class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
@@ -158,11 +149,26 @@ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
 
 def gather_from_sequence_parallel_region(input_, tensor_parallel_output_grad=True):
     output = _GatherFromSequenceParallelRegion.apply(input_, tensor_parallel_output_grad)
-    setattr(output, "sequence_parallel", False)
+    set_sequence_parallel_attr(output, False)
     return output
 
 def reduce_scatter_to_sequence_parallel_region(input_):
     return _ReduceScatterToSequenceParallelRegion.apply(input_)
+
+
+class TpLinear(nn.Module):
+    def __init__(self, fin, fout, bias=True):
+        super(TpLinear, self).__init__()
+        self.weight = Parameter(torch.rand((fin, fout)))
+        self.bias =None
+        if bias:
+            self.bias = Parameter(torch.zeros(fout))
+
+    def forward(self, x):
+        out = torch.matmul(x, self.weight)
+        if self.bias is not None:
+            out +=self.bias
+        return out
 
 class ColParallelLinear(nn.Module):
     def __init__(self, fin, fout, bias=True):
@@ -173,7 +179,6 @@ class ColParallelLinear(nn.Module):
         self.fout = int(fout/self.tp_world_size)
 
         self.linear = TpLinear(fin, self.fout, bias)
-
 
     def forward(self, x):
         """
@@ -205,8 +210,6 @@ class ColParallelLinear(nn.Module):
         cat_full = torch.cat(splits, dim=-1)
 
         with torch.no_grad():
-            # org_shape = self.linear.weight.shape
-            # self.linear.weight = self.linear.weight.reshape(dim, nh//ws, dim3//nh)
             self.linear.weight.copy_(cat_full)
 
 class RowParallelLinear(nn.Module):
