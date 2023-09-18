@@ -39,7 +39,7 @@ def batch_inp(bs20inp, target_bs):
 
 
 
-def train(model, vae, optimizer_class, path, batchsize, use_zero=False, use_amp=True, h=512, w=512, is_xl=False):
+def train(model, vae, optimizer_class, batchsize, use_zero=False, use_amp=True, h=512, w=512, is_xl=False):
     timesteps = torch.arange(batchsize, dtype=torch.int64).cuda()+100
     prompt_embeds = torch.rand([batchsize,77,768], dtype=torch.float16).cuda()
     time_ids = torch.rand([batchsize,6], dtype=torch.float16).cuda()
@@ -160,5 +160,5 @@ vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="va
 # optimizer_class = FusedAdam
 optimizer_class = functools.partial(torch.optim.Adam,fused = True)
 # optimizer_class = torch.optim.AdamW
-train(unet, vae, optimizer_class, '/mnt/petrelfs/share_data/shidongxing/tensors20/', 16,
+train(unet, vae, optimizer_class,  16,
       use_amp=True, use_zero=False, h=512, w=512, is_xl ='xl' in pretrained_model_name_or_path)
